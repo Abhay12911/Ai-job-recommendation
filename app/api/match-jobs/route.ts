@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import { connectDB } from "@/app/lib/mongodb";
 import { Resume } from "@/app/models/resume";
@@ -28,66 +27,77 @@ export async function GET() {
 
     console.log("✅ Resume found:", resume);
 
-    // Fetch jobs from Remotive API
-    console.log("🌍 Fetching jobs from Remotive API...");
-    const jobRes = await fetch("https://remotive.io/api/remote-jobs");
+    // ✅ Fetch jobs from RemoteOK
+    console.log("🌍 Fetching jobs from RemoteOK API...");
+    const jobRes = await fetch("https://remoteok.com/api", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
 
     if (!jobRes.ok) {
-      throw new Error(`Remotive API Error: ${jobRes.statusText}`);
+      throw new Error(`RemoteOK API Error: ${jobRes.statusText}`);
     }
 
     const jobData = await jobRes.json();
-    const jobs = jobData.jobs.slice(0, 50); // Fetch more for better AI results
+
+    // Filter valid jobs (RemoteOK includes a metadata object at index 0)
+    const jobs = jobData.filter((job: any) => job.company && job.position).slice(0, 50);
 
     console.log("✅ Jobs fetched:", jobs.length);
 
-    // Updated prompt to request 10 matched jobs
+    // Build the AI prompt
     const prompt = `
-Based on the resume:
+Based on this resume:
 Skills: ${resume.extractedData.skills?.join(", ")}
 Experience: ${resume.extractedData.experience}
 Education: ${resume.extractedData.education}
 
 And these jobs:
-${jobs.map((job: any, i: number) =>
-  `${i + 1}. ${job.title} at ${job.company_name}. Skills: ${job.tags?.join(", ")}`
-).join("\n")}
+${jobs
+  .map(
+    (job: any, i: number) =>
+      `${i + 1}. ${job.position} at ${job.company}. Tags: ${job.tags?.join(", ")}`
+  )
+  .join("\n")}
 
-Return the top 10 matched jobs in valid JSON format like:
+Return the top 10 most relevant jobs in **valid JSON** format like:
 [
-  { "title": "Job Title", "company": "Company Name", "url": "https://...", "reason": "why it matches" },
-  ...
+  { "title": "Job Title", "company": "Company Name", "url": "https://...", "reason": "why it matches" }
 ]
-Only include the matched jobs, and make sure the JSON is valid and complete.
 `;
 
-    // Call Cohere API
-    console.log("💡 Sending request to Cohere API...");
-    const cohereRes = await fetch("https://api.cohere.ai/v1/chat", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.COHERE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "command-r-plus",
-        message: prompt,
-      }),
-    });
+    // ✅ Call Gemini API
+    console.log("💡 Sending request to Gemini API...");
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }],
+            },
+          ],
+        }),
+      }
+    );
 
-    if (!cohereRes.ok) {
-      throw new Error("Error calling Cohere API");
+    if (!geminiRes.ok) {
+      const errorText = await geminiRes.text();
+      console.error("❌ Gemini API response:", errorText);
+      throw new Error("Error calling Gemini API");
     }
 
-    const cohereData = await cohereRes.json();
-    const output = cohereData.text || cohereData.generations?.[0]?.text;
+    const geminiData = await geminiRes.json();
+    const output = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
 
-    console.log("🤖 Raw Cohere output:", output);
+    console.log("🤖 Raw Gemini output:", output);
 
     let matches;
     try {
       matches = JSON.parse(output);
-    } catch (e) {
+    } catch {
       console.warn("⚠️ Malformed JSON detected, attempting to repair...");
       matches = JSON.parse(jsonrepair(output));
     }
